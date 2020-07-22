@@ -1,0 +1,18 @@
+version: "3"
+services:
+  reverseproxy:
+    build:
+      context: .
+    image: tobiaspfeffer/reverseproxy:${TAG}
+  backend_user:
+    build:
+      context: ../../restapi-user
+    image: tobiaspfeffer/restapi-user:${TAG}
+  backend_feed:
+    build:
+      context: ../../restapi-feed  
+    image: tobiaspfeffer/restapi-feed:${TAG}
+  frontend:
+    build:
+      context: ../../frontend  
+    image: tobiaspfeffer/frontend:${TAG}

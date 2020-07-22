@@ -1,0 +1,69 @@
+language: minimal
+
+services: docker
+
+env:
+  - DOCKER_COMPOSE_VERSION=1.23.2
+
+install:
+  - docker -v && docker-compose -v
+  - sudo rm /usr/local/bin/docker-compose
+  - curl -L https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-`uname -s`-`uname -m` > docker-compose
+  - chmod +x docker-compose
+  - sudo mv docker-compose /usr/local/bin
+  - curl -LO https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl
+  - chmod +x ./kubectl
+  - sudo mv ./kubectl /usr/local/bin/kubectl
+  - docker login -u "${DOCKER_USERNAME}" -p "${DOCKER_PASSWORD}"
+  - curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+  - unzip awscliv2.zip
+  - sudo ./aws/install
+
+script:
+  - export TAG=$(cat version)
+  - docker-compose -f deployment/docker/docker-compose-build.yaml build --parallel
+  - docker-compose -f deployment/docker/docker-compose-build.yaml push
+  - docker tag tobiaspfeffer/reverseproxy:${TAG} tobiaspfeffer/reverseproxy:latest
+  - docker push tobiaspfeffer/reverseproxy:latest
+  - docker tag tobiaspfeffer/restapi-user:${TAG} tobiaspfeffer/restapi-user:latest
+  - docker push tobiaspfeffer/restapi-user:latest
+  - docker tag tobiaspfeffer/restapi-feed:${TAG} tobiaspfeffer/restapi-feed:latest
+  - docker push tobiaspfeffer/restapi-feed:latest
+  - docker tag tobiaspfeffer/frontend:${TAG} tobiaspfeffer/frontend:latest
+  - docker push tobiaspfeffer/frontend:latest
+
+after_script:
+# configure kubectl
+  - sed -i -e 's|KUBE_CA_CERT|'"${KUBE_CA_CERT}"'|g' deployment/k8s/kubeconfig
+  - sed -i -e 's|TPF_POSTGRESS_USERNAME|'"${TPF_POSTGRESS_USERNAME}"'|g' deployment/k8s/kubeconfig
+  - sed -i -e 's|TPF_POSTGRESS_PASSWORD|'"${TPF_POSTGRESS_PASSWORD}"'|g' deployment/k8s/kubeconfig
+  - sed -i -e 's|TPF_AWS_CREDENTIALS|'"${TPF_AWS_CREDENTIALS}"'|g' deployment/k8s/kubeconfig
+  - sed -i -e 's|TPF_AWS_ACCESS_KEY_ID|'"${TPF_AWS_ACCESS_KEY_ID}"'|g' deployment/k8s/kubeconfig
+  - sed -i -e 's|TPF_AWS_SECRET_ACCESS_KEY|'"${TPF_AWS_SECRET_ACCESS_KEY}"'|g' deployment/k8s/kubeconfig
+# make available changes in the .yaml files to EKS
+  - kubectl --kubeconfig deployment/k8s/kubeconfig apply -f deployment/k8s/env-secret.yaml
+  - kubectl --kubeconfig deployment/k8s/kubeconfig apply -f deployment/k8s/aws-secret.yaml
+  - kubectl --kubeconfig deployment/k8s/kubeconfig apply -f deployment/k8s/env-configmap.yaml
+  - kubectl --kubeconfig deployment/k8s/kubeconfig apply -f deployment/k8s/backend-feed-deployment.yaml
+  - kubectl --kubeconfig deployment/k8s/kubeconfig apply -f deployment/k8s/backend-feed-service.yaml
+  - kubectl --kubeconfig deployment/k8s/kubeconfig apply -f deployment/k8s/backend-user-deployment.yaml
+  - kubectl --kubeconfig deployment/k8s/kubeconfig apply -f deployment/k8s/backend-user-service.yaml
+  - kubectl --kubeconfig deployment/k8s/kubeconfig apply -f deployment/k8s/reverseproxy-deployment.yaml
+  - kubectl --kubeconfig deployment/k8s/kubeconfig apply -f deployment/k8s/reverseproxy-service.yaml
+  - kubectl --kubeconfig deployment/k8s/kubeconfig describe svc reverseproxy
+  - export aws_elb_url=$(kubectl --kubeconfig deployment/k8s/kubeconfig describe svc reverseproxy | grep "LoadBalancer Ingress:")
+  - export API_HOST=$(echo ${aws_elb_url} | cut -d " " -f 3)
+  - echo $API_HOST
+  - sed -i -e 's|API_HOST|'"${API_HOST}"'|g' frontend/environments/environment.ts
+  - sed -i -e 's|API_HOST|'"${API_HOST}"'|g' frontend/environments/environment.prod.ts
+  - kubectl --kubeconfig deployment/k8s/kubeconfig apply -f deployment/k8s/frontend-deployment.yaml
+  - kubectl --kubeconfig deployment/k8s/kubeconfig apply -f deployment/k8s/frontend-service.yaml
+# perform rolling update - rolling update is only performed on version change
+  - export TAG=$(cat version)
+  - kubectl --kubeconfig deployment/k8s/kubeconfig set image deployment/frontend frontend=tobiaspfeffer/frontend:${TAG}
+  - kubectl --kubeconfig deployment/k8s/kubeconfig set image deployment/backend-user backend-user=tobiaspfeffer/restapi-user:${TAG}
+  - kubectl --kubeconfig deployment/k8s/kubeconfig set image deployment/backend-feed backend-feed=tobiaspfeffer/restapi-feed:${TAG}
+  - kubectl --kubeconfig deployment/k8s/kubeconfig set image deployment/reverseproxy reverseproxy=tobiaspfeffer/reverseproxy:${TAG}
+
+
+
